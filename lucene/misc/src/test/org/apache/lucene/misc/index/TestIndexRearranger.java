@@ -18,10 +18,22 @@
 package org.apache.lucene.misc.index;
 
 import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
+import java.util.Set;
+import java.util.stream.Stream;
+
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field;
 import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.document.SortedDocValuesField;
+import org.apache.lucene.document.StringField;
+import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
@@ -30,9 +42,12 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.NumericDocValues;
+import org.apache.lucene.index.SortedDocValues;
+import org.apache.lucene.index.Term;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.util.BitSet;
 import org.apache.lucene.util.Bits;
@@ -40,22 +55,85 @@ import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
 
 public class TestIndexRearranger extends LuceneTestCase {
+  private static final String ORD = "ord";
+
+  public static void printIndex(IndexReader reader) throws IOException {
+    System.out.println("Index:");
+
+    for (int i = 0; i < reader.leaves().size(); ++i) {
+      System.out.printf("Segment %d:%n", i);
+
+      LeafReader segment = reader.leaves().get(i).reader();
+      NumericDocValues ords = segment.getNumericDocValues(ORD);
+      BinaryDocValues textOrds = segment.getBinaryDocValues("textOrd");
+      Bits liveDocs = segment.getLiveDocs();
+
+      for (int j = 0; j < segment.maxDoc(); j++) {
+        if (ords.advanceExact(j) == false) {
+          continue;
+        }
+        int ord = (int) ords.longValue();
+
+        if (textOrds.advanceExact(j) == false) {
+          continue;
+        }
+        String textOrd = textOrds.binaryValue().toString();
+
+        boolean isDeleted = liveDocs != null && liveDocs.get(j) == false;
+
+        String s = String.format("(ord = %d, textOrd = %s, deleted = %b)", ord, textOrd, isDeleted);
+        System.out.println(s);
+      }
+    }
+  }
+
+  public void testRearrangeDeletes() throws Exception {
+    runEvenOddRearrange(true);
+//    assertTrue(false);
+  }
+
   public void testRearrange() throws Exception {
+    runEvenOddRearrange(false);
+  }
+
+  private List<Directory> makeDirs(int n) throws IOException {
+    List<Directory> dirs = new ArrayList<>();
+    for (int i = 0; i < n; ++i) {
+      Path path = createTempDir();
+      Directory dir = FSDirectory.open(path);
+      dirs.add(dir);
+    }
+    return dirs;
+  }
+
+  private List<IndexWriterConfig> makeIwcs(int n) {
+    List<IndexWriterConfig> iwcs = new ArrayList<>();
+    for (int  i = 0; i < n; ++i) {
+      iwcs.add(getIndexWriterConfig());
+    }
+    return iwcs;
+  }
+
+  private void runEvenOddRearrange(boolean deletePositiveEvens) throws Exception {
     Directory inputDir = newDirectory();
-    createIndex(100, 10, inputDir);
+    createIndex(100, 10, inputDir, deletePositiveEvens);
+    IndexReader inputReader = DirectoryReader.open(inputDir);
+    printIndex(inputReader);
+    inputReader.close();
 
     Directory outputDir = newDirectory();
     IndexRearranger rearranger =
-        new IndexRearranger(
-            inputDir,
-            outputDir,
-            getIndexWriterConfig(),
-            List.of(new OddDocSelector(), new EvenDocSelector()));
-    rearranger.execute();
+            new IndexRearranger(
+                    inputDir,
+                    outputDir,
+                    getIndexWriterConfig(),
+                    List.of(new OddDocSelector(), new EvenDocSelector()));
+    rearranger.execute(makeDirs(2), makeIwcs(2));
     IndexReader reader = DirectoryReader.open(outputDir);
+    printIndex(reader);
     assertEquals(2, reader.leaves().size());
     LeafReader segment1 = reader.leaves().get(0).reader();
-    assertEquals(50, segment1.numDocs());
+    assertEquals(50, segment1.maxDoc());
     NumericDocValues numericDocValues = segment1.getNumericDocValues("ord");
     assertTrue(numericDocValues.advanceExact(0));
     boolean odd = numericDocValues.longValue() % 2 == 1;
@@ -64,7 +142,7 @@ public class TestIndexRearranger extends LuceneTestCase {
       assertEquals(odd, numericDocValues.longValue() % 2 == 1);
     }
     LeafReader segment2 = reader.leaves().get(1).reader();
-    assertEquals(50, segment2.numDocs());
+    assertEquals(50, segment2.maxDoc());
     numericDocValues = segment2.getNumericDocValues("ord");
     assertTrue(numericDocValues.advanceExact(0));
     boolean odd2 = numericDocValues.longValue() % 2 == 1;
@@ -127,15 +205,19 @@ public class TestIndexRearranger extends LuceneTestCase {
         .setIndexSort(new Sort(new SortField("ord", SortField.Type.INT)));
   }
 
-  private static void createIndex(int docNum, int segNum, Directory dir) throws IOException {
+  private static void createIndex(int docNum, int segNum, Directory dir, boolean deletePositiveEvens) throws IOException {
     IndexWriter w = new IndexWriter(dir, getIndexWriterConfig());
     int docPerSeg = (int) Math.ceil((double) docNum / segNum);
     for (int i = 0; i < docNum; i++) {
       Document doc = new Document();
       doc.add(new NumericDocValuesField("ord", i));
       doc.add(new BinaryDocValuesField("textOrd", new BytesRef(Integer.toString(i))));
+      if (deletePositiveEvens && i != 0 && i % 2 == 0) {
+        doc.add(new StringField("delete", "yes", Field.Store.YES));
+      }
       w.addDocument(doc);
       if (i % docPerSeg == docPerSeg - 1) {
+        w.deleteDocuments(new Term("delete", "yes"));
         w.commit();
       }
     }
@@ -145,10 +227,14 @@ public class TestIndexRearranger extends LuceneTestCase {
     w.close();
   }
 
+  private static void createIndex(int docNum, int segNum, Directory dir) throws IOException {
+    createIndex(docNum, segNum, dir, false);
+  }
+
   private static class OddDocSelector implements IndexRearranger.DocumentSelector {
 
     @Override
-    public BitSet getFilteredLiveDocs(CodecReader reader) throws IOException {
+    public BitSet getAllFilteredDocs(CodecReader reader) throws IOException {
       FixedBitSet filteredSet = new FixedBitSet(reader.maxDoc());
       Bits liveDocs = reader.getLiveDocs();
       NumericDocValues numericDocValues = reader.getNumericDocValues("ord");
@@ -162,24 +248,51 @@ public class TestIndexRearranger extends LuceneTestCase {
       }
       return filteredSet;
     }
+
+    @Override
+    public boolean isDeleted(LeafReader reader, int idx) {
+      return false;
+    }
   }
 
   private static class EvenDocSelector implements IndexRearranger.DocumentSelector {
+    Set<Long> filteredDeletes = new HashSet<>();
 
     @Override
-    public BitSet getFilteredLiveDocs(CodecReader reader) throws IOException {
+    public BitSet getAllFilteredDocs(CodecReader reader) throws IOException {
       FixedBitSet filteredSet = new FixedBitSet(reader.maxDoc());
       Bits liveDocs = reader.getLiveDocs();
       NumericDocValues numericDocValues = reader.getNumericDocValues("ord");
       for (int i = 0; i < reader.maxDoc(); i++) {
-        if (liveDocs != null && liveDocs.get(i) == false) {
+        if (numericDocValues.advanceExact(i) == false) {
           continue;
         }
-        if (numericDocValues.advanceExact(i) && numericDocValues.longValue() % 2 == 0) {
-          filteredSet.set(i);
+        if (numericDocValues.longValue() % 2 != 0) {
+          continue;
         }
+
+        filteredSet.set(i);
+        if (liveDocs == null || liveDocs.get(i) == false) {
+          filteredDeletes.add(numericDocValues.longValue());
+        }
+
+//        if (liveDocs != null && liveDocs.get(i) == false) {
+//          continue;
+//        }
+//        if (numericDocValues.advanceExact(i) && numericDocValues.longValue() % 2 == 0) {
+//          filteredSet.set(i);
+//        }
       }
       return filteredSet;
+    }
+
+    @Override
+    public boolean isDeleted(LeafReader reader, int idx) throws IOException {
+      NumericDocValues ords = reader.getNumericDocValues(ORD);
+      if (ords.advanceExact(idx) == false) {
+        return false;
+      }
+      return filteredDeletes.contains(ords.longValue());
     }
   }
 }

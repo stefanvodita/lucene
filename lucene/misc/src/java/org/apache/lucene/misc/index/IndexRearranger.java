@@ -18,8 +18,11 @@
 package org.apache.lucene.misc.index;
 
 import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,6 +33,7 @@ import org.apache.lucene.index.FilterCodecReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.SegmentCommitInfo;
@@ -37,6 +41,7 @@ import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BitSet;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.NamedThreadFactory;
@@ -77,6 +82,10 @@ public class IndexRearranger {
   }
 
   public void execute() throws Exception {
+    execute(null, null);
+  }
+
+  public void execute(List<Directory> segmentDirs, List<IndexWriterConfig> iwcs) throws Exception {
     config.setMergePolicy(
         NoMergePolicy.INSTANCE); // do not merge since one addIndexes call create one segment
     try (IndexWriter writer = new IndexWriter(output, config);
@@ -85,27 +94,35 @@ public class IndexRearranger {
           Executors.newFixedThreadPool(
               Math.min(Runtime.getRuntime().availableProcessors(), documentSelectors.size()),
               new NamedThreadFactory("rearranger"));
-      ArrayList<Future<Void>> futures = new ArrayList<>();
-      for (DocumentSelector record : documentSelectors) {
-        Callable<Void> addSegment =
-            () -> {
-              addOneSegment(writer, reader, record);
-              return null;
-            };
+
+      List<Future<Void>> futures = new ArrayList<>();
+//      for (DocumentSelector selector : documentSelectors) {
+      for (int i = 0; i < documentSelectors.size(); ++i) {
+        final DocumentSelector selector = documentSelectors.get(i);
+        final IndexWriterConfig iwc = iwcs.get(i);
+        final Directory directory = segmentDirs.get(i);
+        Callable<Void> addSegment = () -> {addOneSegment(reader, selector, iwc, directory); return null;};
         futures.add(executor.submit(addSegment));
       }
       for (Future<Void> future : futures) {
         future.get();
       }
       executor.shutdown();
+
+      writer.addIndexes(segmentDirs.toArray(new Directory[0]));
+
+      for (Directory dir : segmentDirs) {
+        dir.close();
+      }
     }
+
     List<SegmentCommitInfo> ordered = new ArrayList<>();
     try (IndexReader reader = DirectoryReader.open(output)) {
       for (DocumentSelector ds : documentSelectors) {
         int foundLeaf = -1;
         for (LeafReaderContext context : reader.leaves()) {
           SegmentReader sr = (SegmentReader) context.reader();
-          int docFound = ds.getFilteredLiveDocs(sr).nextSetBit(0);
+          int docFound = ds.getAllFilteredDocs(sr).nextSetBit(0);
           if (docFound != DocIdSetIterator.NO_MORE_DOCS) {
             if (foundLeaf != -1) {
               throw new IllegalStateException(
@@ -129,14 +146,40 @@ public class IndexRearranger {
     sis.commit(output);
   }
 
-  private static void addOneSegment(
-      IndexWriter writer, IndexReader reader, DocumentSelector selector) throws IOException {
+  private static Path getTmpDirPath() {
+    return Paths.get("/", "tmp", "rearrange_indexes", UUID.randomUUID().toString());
+  }
+
+  private static void addOneSegment(IndexReader reader, DocumentSelector selector,
+                                         IndexWriterConfig config, Directory dir) throws IOException {
+    IndexWriter segmentWriter = new IndexWriter(dir, config);
     CodecReader[] readers = new CodecReader[reader.leaves().size()];
     for (LeafReaderContext context : reader.leaves()) {
       readers[context.ord] =
           new DocSelectorFilteredCodecReader((CodecReader) context.reader(), selector);
     }
-    writer.addIndexes(readers);
+    segmentWriter.addIndexes(readers);
+    segmentWriter.commit();
+
+    DirectoryReader directoryReader = DirectoryReader.open(segmentWriter);
+    LeafReader segmentReader = directoryReader.leaves().get(0).reader();
+    applyDeletes(segmentWriter, segmentReader, selector);
+//    segmentReader.close();
+    directoryReader.close();
+
+    segmentWriter.close();
+  }
+
+  private static void applyDeletes(IndexWriter segmentWriter, LeafReader segmentReader,
+                                   DocumentSelector selector) throws IOException {
+    for (int i = 0; i < segmentReader.maxDoc(); ++i) {
+      if (selector.isDeleted(segmentReader, i)) {
+        if (segmentWriter.tryDeleteDocument(segmentReader, i) == -1) {
+          System.out.println("tryDeleteDocument failed and there's no plan B");
+        }
+      }
+    }
+    segmentWriter.commit();
   }
 
   private static class DocSelectorFilteredCodecReader extends FilterCodecReader {
@@ -147,7 +190,7 @@ public class IndexRearranger {
     public DocSelectorFilteredCodecReader(CodecReader in, DocumentSelector selector)
         throws IOException {
       super(in);
-      filteredLiveDocs = selector.getFilteredLiveDocs(in);
+      filteredLiveDocs = selector.getAllFilteredDocs(in);
       numDocs = filteredLiveDocs.cardinality();
     }
 
@@ -174,6 +217,8 @@ public class IndexRearranger {
 
   /** Select document within a CodecReader */
   public interface DocumentSelector {
-    BitSet getFilteredLiveDocs(CodecReader reader) throws IOException;
+    BitSet getAllFilteredDocs(CodecReader reader) throws IOException;
+
+    boolean isDeleted(LeafReader reader, int idx) throws IOException;
   }
 }
