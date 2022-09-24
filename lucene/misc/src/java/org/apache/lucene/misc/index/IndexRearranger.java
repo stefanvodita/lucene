@@ -96,24 +96,26 @@ public class IndexRearranger {
               new NamedThreadFactory("rearranger"));
 
       List<Future<Void>> futures = new ArrayList<>();
-//      for (DocumentSelector selector : documentSelectors) {
-      for (int i = 0; i < documentSelectors.size(); ++i) {
-        final DocumentSelector selector = documentSelectors.get(i);
-        final IndexWriterConfig iwc = iwcs.get(i);
-        final Directory directory = segmentDirs.get(i);
-        Callable<Void> addSegment = () -> {addOneSegment(reader, selector, iwc, directory); return null;};
-        futures.add(executor.submit(addSegment));
+      for (DocumentSelector selector : documentSelectors) {
+//      for (int i = 0; i < documentSelectors.size(); ++i) {
+//        final DocumentSelector selector = documentSelectors.get(i);
+//        final IndexWriterConfig iwc = iwcs.get(i);
+//        final Directory directory = segmentDirs.get(i);
+
+//        Callable<Void> addSegment = () -> {addOneSegment(writer, reader, selector); return null;};
+//        futures.add(executor.submit(addSegment));
+        addOneSegment(writer, reader, selector);
       }
-      for (Future<Void> future : futures) {
-        future.get();
-      }
+//      for (Future<Void> future : futures) {
+//        future.get();
+//      }
       executor.shutdown();
 
-      writer.addIndexes(segmentDirs.toArray(new Directory[0]));
+//      writer.addIndexes(segmentDirs.toArray(new Directory[0]));
 
-      for (Directory dir : segmentDirs) {
-        dir.close();
-      }
+//      for (Directory dir : segmentDirs) {
+//        dir.close();
+//      }
     }
 
     List<SegmentCommitInfo> ordered = new ArrayList<>();
@@ -137,7 +139,7 @@ public class IndexRearranger {
             ordered.add(sr.getSegmentInfo());
           }
         }
-        assert foundLeaf != -1;
+//        assert foundLeaf != -1;
       }
     }
     SegmentInfos sis = SegmentInfos.readLatestCommit(output);
@@ -150,6 +152,24 @@ public class IndexRearranger {
     return Paths.get("/", "tmp", "rearrange_indexes", UUID.randomUUID().toString());
   }
 
+  private static void addOneSegment(
+          IndexWriter writer, IndexReader reader, DocumentSelector selector) throws IOException {
+    CodecReader[] readers = new CodecReader[reader.leaves().size()];
+    for (LeafReaderContext context : reader.leaves()) {
+      readers[context.ord] =
+              new DocSelectorFilteredCodecReader((CodecReader) context.reader(), selector);
+    }
+    writer.addIndexes(readers);
+//    writer.commit();
+
+    DirectoryReader directoryReader = DirectoryReader.open(writer);
+    int n = directoryReader.leaves().size();
+    LeafReader segmentReader = directoryReader.leaves().get(n - 1).reader();
+    applyDeletes(writer, segmentReader, selector);
+//    segmentReader.close();
+    directoryReader.close();
+  }
+
   private static void addOneSegment(IndexReader reader, DocumentSelector selector,
                                          IndexWriterConfig config, Directory dir) throws IOException {
     IndexWriter segmentWriter = new IndexWriter(dir, config);
@@ -159,7 +179,7 @@ public class IndexRearranger {
           new DocSelectorFilteredCodecReader((CodecReader) context.reader(), selector);
     }
     segmentWriter.addIndexes(readers);
-    segmentWriter.commit();
+//    segmentWriter.commit();
 
     DirectoryReader directoryReader = DirectoryReader.open(segmentWriter);
     LeafReader segmentReader = directoryReader.leaves().get(0).reader();
@@ -179,7 +199,7 @@ public class IndexRearranger {
         }
       }
     }
-    segmentWriter.commit();
+//    segmentWriter.commit();
   }
 
   private static class DocSelectorFilteredCodecReader extends FilterCodecReader {
