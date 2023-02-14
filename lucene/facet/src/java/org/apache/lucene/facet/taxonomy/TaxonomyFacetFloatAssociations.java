@@ -17,6 +17,7 @@
 package org.apache.lucene.facet.taxonomy;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import org.apache.lucene.facet.FacetField;
@@ -88,8 +89,19 @@ public class TaxonomyFacetFloatAssociations extends FloatTaxonomyFacets {
       FacetsCollector fc,
       AssociationAggregationFunction aggregationFunction)
       throws IOException {
-    super(indexFieldName, taxoReader, aggregationFunction, config);
-    aggregateValues(aggregationFunction, fc.getMatchingDocs());
+    this(indexFieldName, taxoReader, config, fc, List.of(aggregationFunction));
+  }
+
+  /** Create {@code TaxonomyFacetFloatAssociations} with multiple aggregations. */
+  public TaxonomyFacetFloatAssociations(
+      String indexFieldName,
+      TaxonomyReader taxoReader,
+      FacetsConfig config,
+      FacetsCollector fc,
+      List<AssociationAggregationFunction> aggregationFunctions)
+      throws IOException {
+    super(indexFieldName, taxoReader, aggregationFunctions, config);
+    aggregateValues(aggregationFunctions, fc.getMatchingDocs());
   }
 
   /**
@@ -104,8 +116,26 @@ public class TaxonomyFacetFloatAssociations extends FloatTaxonomyFacets {
       AssociationAggregationFunction aggregationFunction,
       DoubleValuesSource valuesSource)
       throws IOException {
-    super(indexFieldName, taxoReader, aggregationFunction, config);
-    aggregateValues(aggregationFunction, fc.getMatchingDocs(), fc.getKeepScores(), valuesSource);
+    this(
+        indexFieldName,
+        taxoReader,
+        config,
+        fc,
+        List.of(aggregationFunction),
+        List.of((valuesSource)));
+  }
+
+  /** Create {@code TaxonomyFacetFloatAssociations} with multiple aggregations. */
+  public TaxonomyFacetFloatAssociations(
+      String indexFieldName,
+      TaxonomyReader taxoReader,
+      FacetsConfig config,
+      FacetsCollector fc,
+      List<AssociationAggregationFunction> aggregationFunctions,
+      List<DoubleValuesSource> valuesSources)
+      throws IOException {
+    super(indexFieldName, taxoReader, aggregationFunctions, config);
+    aggregateValues(aggregationFunctions, fc.getMatchingDocs(), fc.getKeepScores(), valuesSources);
   }
 
   private static DoubleValues scores(MatchingDocs hits) {
@@ -128,27 +158,37 @@ public class TaxonomyFacetFloatAssociations extends FloatTaxonomyFacets {
 
   /** Aggregate using the provided {@code DoubleValuesSource}. */
   private void aggregateValues(
-      AssociationAggregationFunction aggregationFunction,
+      List<AssociationAggregationFunction> aggregationFunctions,
       List<MatchingDocs> matchingDocs,
       boolean keepScores,
-      DoubleValuesSource valueSource)
+      List<DoubleValuesSource> valuesSources)
       throws IOException {
     for (MatchingDocs hits : matchingDocs) {
       SortedNumericDocValues ordinalValues =
           DocValues.getSortedNumeric(hits.context.reader(), indexFieldName);
       DoubleValues scores = keepScores ? scores(hits) : null;
-      DoubleValues functionValues = valueSource.getValues(hits.context, scores);
+      List<DoubleValues> functionValues = new ArrayList<>();
+      for (DoubleValuesSource valuesSource : valuesSources) {
+        functionValues.add(valuesSource.getValues(hits.context, scores));
+      }
       DocIdSetIterator it =
           ConjunctionUtils.intersectIterators(List.of(hits.bits.iterator(), ordinalValues));
 
       for (int doc = it.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = it.nextDoc()) {
-        if (functionValues.advanceExact(doc)) {
-          float value = (float) functionValues.doubleValue();
-          int ordinalCount = ordinalValues.docValueCount();
-          for (int i = 0; i < ordinalCount; i++) {
-            int ord = (int) ordinalValues.nextValue();
-            float newValue = aggregationFunction.aggregate(values[ord], value);
-            values[ord] = newValue;
+        for (int aggregationIdx = 0;
+            aggregationIdx < aggregationFunctions.size();
+            aggregationIdx++) {
+          if (functionValues.get(aggregationIdx).advanceExact(doc)) {
+            float value = (float) functionValues.get(aggregationIdx).doubleValue();
+            int ordinalCount = ordinalValues.docValueCount();
+            for (int i = 0; i < ordinalCount; i++) {
+              int ord = (int) ordinalValues.nextValue();
+              float newValue =
+                  aggregationFunctions
+                      .get(aggregationIdx)
+                      .aggregate(values[aggregationIdx][ord], value);
+              values[aggregationIdx][ord] = newValue;
+            }
           }
         }
       }
@@ -160,7 +200,7 @@ public class TaxonomyFacetFloatAssociations extends FloatTaxonomyFacets {
 
   /** Aggregate from indexed association values. */
   private void aggregateValues(
-      AssociationAggregationFunction aggregationFunction, List<MatchingDocs> matchingDocs)
+      List<AssociationAggregationFunction> aggregationFunctions, List<MatchingDocs> matchingDocs)
       throws IOException {
 
     for (MatchingDocs hits : matchingDocs) {
@@ -178,8 +218,15 @@ public class TaxonomyFacetFloatAssociations extends FloatTaxonomyFacets {
           offset += 4;
           float value = (float) BitUtil.VH_BE_FLOAT.get(bytes, offset);
           offset += 4;
-          float newValue = aggregationFunction.aggregate(values[ord], value);
-          values[ord] = newValue;
+          for (int aggregationIdx = 0;
+              aggregationIdx < aggregationFunctions.size();
+              aggregationIdx++) {
+            float newValue =
+                aggregationFunctions
+                    .get(aggregationIdx)
+                    .aggregate(values[aggregationIdx][ord], value);
+            values[aggregationIdx][ord] = newValue;
+          }
         }
       }
     }
