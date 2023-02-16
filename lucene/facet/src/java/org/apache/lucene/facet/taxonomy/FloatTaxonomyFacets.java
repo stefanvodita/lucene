@@ -31,7 +31,7 @@ import org.apache.lucene.facet.TopOrdAndFloatQueue;
 import org.apache.lucene.util.PriorityQueue;
 
 /** Base class for all taxonomy-based facets that aggregate to a per-ords float[]. */
-abstract class FloatTaxonomyFacets extends TaxonomyFacets {
+public abstract class FloatTaxonomyFacets extends TaxonomyFacets {
 
   // TODO: also use native hash map for sparse collection, like IntTaxonomyFacets
 
@@ -39,10 +39,10 @@ abstract class FloatTaxonomyFacets extends TaxonomyFacets {
   final AssociationAggregationFunction aggregationFunction;
 
   /** Per-ordinal value. */
-  final float[] values;
+  public final float[] values;
 
   /** Sole constructor. */
-  FloatTaxonomyFacets(
+  public FloatTaxonomyFacets(
       String indexFieldName,
       TaxonomyReader taxoReader,
       AssociationAggregationFunction aggregationFunction,

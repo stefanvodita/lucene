@@ -27,4 +27,5 @@ module org.apache.lucene.demo {
   exports org.apache.lucene.demo;
   exports org.apache.lucene.demo.facet;
   exports org.apache.lucene.demo.knn;
+  exports org.apache.lucene.demo.facet.pickerranking;
 }
