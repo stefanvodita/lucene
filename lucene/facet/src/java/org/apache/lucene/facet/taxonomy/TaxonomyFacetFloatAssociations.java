@@ -175,14 +175,14 @@ public class TaxonomyFacetFloatAssociations extends FloatTaxonomyFacets {
           ConjunctionUtils.intersectIterators(List.of(hits.bits.iterator(), ordinalValues));
 
       for (int doc = it.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = it.nextDoc()) {
-        for (int aggregationIdx = 0;
-            aggregationIdx < aggregationFunctions.size();
-            aggregationIdx++) {
-          if (functionValues.get(aggregationIdx).advanceExact(doc)) {
-            float value = (float) functionValues.get(aggregationIdx).doubleValue();
-            int ordinalCount = ordinalValues.docValueCount();
-            for (int i = 0; i < ordinalCount; i++) {
-              int ord = (int) ordinalValues.nextValue();
+        int ordinalCount = ordinalValues.docValueCount();
+        for (int i = 0; i < ordinalCount; i++) {
+          int ord = (int) ordinalValues.nextValue();
+          for (int aggregationIdx = 0;
+               aggregationIdx < aggregationFunctions.size();
+               aggregationIdx++) {
+            if (functionValues.get(aggregationIdx).advanceExact(doc)) {
+              float value = (float) functionValues.get(aggregationIdx).doubleValue();
               float newValue =
                   aggregationFunctions
                       .get(aggregationIdx)
