@@ -179,8 +179,8 @@ public class TaxonomyFacetFloatAssociations extends FloatTaxonomyFacets {
         for (int i = 0; i < ordinalCount; i++) {
           int ord = (int) ordinalValues.nextValue();
           for (int aggregationIdx = 0;
-               aggregationIdx < aggregationFunctions.size();
-               aggregationIdx++) {
+              aggregationIdx < aggregationFunctions.size();
+              aggregationIdx++) {
             if (functionValues.get(aggregationIdx).advanceExact(doc)) {
               float value = (float) functionValues.get(aggregationIdx).doubleValue();
               float newValue =
