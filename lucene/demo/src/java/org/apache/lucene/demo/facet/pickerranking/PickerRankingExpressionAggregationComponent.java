@@ -41,5 +41,37 @@ record PickerRankingExpressionAggregationComponent(
             return "sum";
           }
         };
+
+      static final AggregationFunction DOC2ORD =
+          new AggregationFunction() {
+            @Override
+            AssociationAggregationFunction getFunction() {
+              return new AssociationAggregationFunction() {
+                @Override
+                public int aggregate(int existingVal, int newVal) {
+                  return 0;
+                }
+
+                @Override
+                public float aggregate(float existingVal, float newVal) {
+                  if (existingVal == newVal) {
+                    return existingVal;
+                  }
+                  // The existing value could have been intentionally set to 0,
+                  // in which case this is wrong and we should throw exception.
+                  if (existingVal == 0) {
+                    return newVal;
+                  }
+                  System.out.println("Keys are not unique - possible wrong dimension");
+                  return 0;
+                }
+              };
+            }
+
+            @Override
+            String name() {
+                  return "d2o";
+              }
+          };
   }
 }

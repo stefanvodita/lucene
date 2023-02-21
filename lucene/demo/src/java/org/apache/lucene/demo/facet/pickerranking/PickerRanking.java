@@ -53,6 +53,8 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.ConjunctionUtils;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.DoubleValues;
@@ -97,6 +99,7 @@ public class PickerRanking {
 //                  new InputStreamReader(Files.newInputStream(Paths.get(geonamesDataPath))))) {
 //        long t0 = System.nanoTime();
 //        indexDocs(tw, iw, reader, docLimit);
+//        indexAdditionalDocs(tw, iw);
 //        System.out.printf(
 //            Locale.ROOT, "Indexing time: %d msec%n", (System.nanoTime() - t0) / 1_000_000);
 //      }
@@ -126,8 +129,15 @@ public class PickerRanking {
         // hits for faceting, just like we would in our matching phase:
         IndexSearcher searcher = new IndexSearcher(reader);
         FacetsCollectorManager fcm = new FacetsCollectorManager();
-        Query q = new TermQuery(new Term("name", "saint"));
-        FacetsCollector fc = searcher.search(q, fcm);
+
+        Query q = new BooleanQuery.Builder()
+                .add(new TermQuery(new Term("name", "saint")), BooleanClause.Occur.MUST)
+                .add(new TermQuery(new Term("type", "point_of_interest")), BooleanClause.Occur.MUST)
+                .build();
+        FacetsCollector poiFc = searcher.search(q, fcm);
+
+        q = new TermQuery(new Term("type", "country"));
+        FacetsCollector countryFc = searcher.search(q, fcm);
 
         // [3] Grab the picker ranking expressions from the request. Imagine these strings come in
         // through our binning sort- param. Here we have a different expression for binning on
@@ -151,6 +161,9 @@ public class PickerRanking {
         String timezoneRankingExpression =
             "(msa_elevation_max > 1000.0 ? 2.0 : 1.0) * msa_population_max";
 
+        String countryRankingExpression =
+            "msa_tourism_factor_d2o * msa_population_sum / msa_ONE_sum";
+
         // [4] Imagine we now parse all "msa" components from the picker ranking expressions,
         // and we build a set of all the unique components. A component is simply (field, function):
         Set<PickerRankingExpressionAggregationComponent> pickerRankingComponents =
@@ -167,13 +180,24 @@ public class PickerRanking {
           // picker ranking expressions. Note that the values are computed up-front and are
           // re-used if they're referenced in multiple picker ranking expressions:
           MatchsetAggregatedVirtualField pickerVirtualField =
-              new MatchsetAggregatedVirtualField(taxoReader, facetsConfig, globalBindings, c, fc);
+              new MatchsetAggregatedVirtualField(taxoReader, facetsConfig, globalBindings, c, poiFc);
           pickerRankingBindings.add(
               c.componentString(), pickerVirtualField.getDoubleValuesSource());
         }
 
+        PickerRankingExpressionAggregationComponent c = new PickerRankingExpressionAggregationComponent(
+                "tourism_factor",
+                PickerRankingExpressionAggregationComponent.AggregationFunction.DOC2ORD
+        );
+        MatchsetAggregatedVirtualField pickerVirtualField =
+                new MatchsetAggregatedVirtualField(taxoReader, facetsConfig, globalBindings, c, countryFc);
+        pickerRankingBindings.add(
+                c.componentString(), pickerVirtualField.getDoubleValuesSource());
+
         // [6] Get all the unique ordinals present in the matchset (across all dimensions):
-        BitSet ordinalsInMatchset = getOrdinalsForHits(taxoReader, fc);
+        BitSet ordinalsInMatchset = getOrdinalsForHits(taxoReader, poiFc);
+
+        BitSet ordinalsInCountryMatchset = getOrdinalsForHits(taxoReader, countryFc);
 
         // [7] Facet our two dimensions and print all the individual components that went into the
         // picker ranking expression (simulating return fields):
@@ -185,11 +209,19 @@ public class PickerRanking {
             pickerRankingComponents,
             taxoReader);
 
+//        doSingleDimFaceting(
+//            pickerRankingBindings,
+//            timezoneRankingExpression,
+//            ordinalsInMatchset,
+//            "tz",
+//            pickerRankingComponents,
+//            taxoReader);
+
         doSingleDimFaceting(
             pickerRankingBindings,
-            timezoneRankingExpression,
-            ordinalsInMatchset,
-            "tz",
+            countryRankingExpression,
+            ordinalsInCountryMatchset,
+            "country_code",
             pickerRankingComponents,
             taxoReader);
       }
@@ -206,6 +238,7 @@ public class PickerRanking {
     globalBindings.add("lon", DoubleValuesSource.fromDoubleField("lon"));
     globalBindings.add("elevation", DoubleValuesSource.fromLongField("elevation"));
     globalBindings.add("population", DoubleValuesSource.fromLongField("population"));
+    globalBindings.add("tourism_factor", DoubleValuesSource.fromDoubleField("tourism_factor"));
 
     // Virtual field that always returns the value 1.0:
     globalBindings.add("ONE", DoubleValuesSource.constant(1.0));
@@ -331,6 +364,23 @@ public class PickerRanking {
   // Indexing stuff
   ////////////////////////////////////////
 
+  private static void indexAdditionalDocs(TaxonomyWriter tw, IndexWriter iw) throws IOException {
+    String[] countryCodes = new String[] {"BE", "BB", "AG", "AU", "CA", "BQ", "BM", "BL", "AQ", "AR"};
+    String[] regions = new String[] {"BeNeLux", "Caribbean", "Caribbean", "Australia", "Continental America",
+    "Caribbean", "Atlantic", "Caribbean", "Antarctica", "Continental America"};
+    Double[] tourismFactor = new Double[] {0.8, 0.6, 0.56, 0.5, 0.55, 0.57, 0.68, 0.52, 0.1, 0.58};
+
+    for (int i = 0; i < countryCodes.length; i++) {
+      Document doc = new Document();
+      TextField type = new TextField("type", "country", Field.Store.NO);
+      doc.add(type);
+      addFacetField(doc, "country_code", countryCodes[i]);
+      addFacetField(doc, "region", regions[i]);
+      addDoubleField(doc, "tourism_factor", String.valueOf(tourismFactor[i]));
+      iw.addDocument(facetsConfig.build(tw, doc));
+    }
+  }
+
   private static void indexDocs(
       TaxonomyWriter tw, IndexWriter iw, LineNumberReader reader, int docLimit) throws Exception {
     String line;
@@ -348,6 +398,8 @@ public class PickerRanking {
         doc.add(id);
         TextField name = new TextField("name", values[1], Field.Store.NO);
         doc.add(name);
+        TextField type = new TextField("type", "point_of_interest", Field.Store.NO);
+        doc.add(type);
         addDoubleField(doc, "lat", values[4]);
         addDoubleField(doc, "lon", values[5]);
         addFacetField(doc, "country_code", values[8]);
