@@ -17,15 +17,14 @@
 package org.apache.lucene.demo.facet.pickerranking;
 
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.LineNumberReader;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.Locale;
 import java.util.Set;
+
+import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.DoublePoint;
 import org.apache.lucene.document.Field;
@@ -46,11 +45,9 @@ import org.apache.lucene.facet.LabelAndValue;
 import org.apache.lucene.facet.taxonomy.TaxonomyReader;
 import org.apache.lucene.facet.taxonomy.TaxonomyWriter;
 import org.apache.lucene.facet.taxonomy.directory.DirectoryTaxonomyReader;
-import org.apache.lucene.facet.taxonomy.directory.DirectoryTaxonomyWriter;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.IndexWriter;
-import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.BooleanClause;
@@ -64,6 +61,7 @@ import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BitSet;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.NumericUtils;
@@ -118,6 +116,7 @@ public class PickerRanking {
         // * lon: document longitude (physically in the index)
         // * elevation: document elevation (physically in the index)
         // * population: document population (physically in the index)
+        // * tourism_factor: country document tourism_factor (physically in the index)
         // * ONE: virtual function that always returns the value 1.0 (can be used for counting)
         // * distance_from_seattle: virtual function that returns the distance of the document
         //   from Seattle, WA
@@ -136,6 +135,9 @@ public class PickerRanking {
                 .build();
         FacetsCollector poiFc = searcher.search(q, fcm);
 
+        // For countries, we just match all, since I haven't put in any countries that do not
+        // correspond to a matched PoI. However, this is a genuine problem in the general case,
+        // where we need to identify which countries are relevant to the PoIs.
         q = new TermQuery(new Term("type", "country"));
         FacetsCollector countryFc = searcher.search(q, fcm);
 
@@ -161,8 +163,18 @@ public class PickerRanking {
         String timezoneRankingExpression =
             "(msa_elevation_max > 1000.0 ? 2.0 : 1.0) * msa_population_max";
 
+        // csa = country-set aggregation
+        // d2o = docid to ordinal
+        // csa_tourism_factor_d2o - practically, this is aggregating tourism_factor (unique per country)
+        //                              across country docs
+        //                        - conceptually, it's just providing tourism_facto as ordinal-keyed values
         String countryRankingExpression =
-            "msa_tourism_factor_d2o * msa_population_sum / msa_ONE_sum";
+            "csa_tourism_factor_d2o * msa_population_sum / msa_ONE_sum";
+
+        // rsa = region-set aggregation
+        // rsa_csa_population_max_max = max(max(population for population in country) for country in region)
+        String regionRankingExpression =
+            "rsa_tourism_factor_sum * rsa_csa_population_max_max";
 
         // [4] Imagine we now parse all "msa" components from the picker ranking expressions,
         // and we build a set of all the unique components. A component is simply (field, function):
@@ -185,8 +197,9 @@ public class PickerRanking {
               c.componentString(), pickerVirtualField.getDoubleValuesSource());
         }
 
+        // Add the csa_tourism_factor_doc2ord "aggregation"
         PickerRankingExpressionAggregationComponent c = new PickerRankingExpressionAggregationComponent(
-                "tourism_factor",
+            "csa", "tourism_factor",
                 PickerRankingExpressionAggregationComponent.AggregationFunction.DOC2ORD
         );
         MatchsetAggregatedVirtualField pickerVirtualField =
@@ -194,12 +207,56 @@ public class PickerRanking {
         pickerRankingBindings.add(
                 c.componentString(), pickerVirtualField.getDoubleValuesSource());
 
+        // Add rsa_tourism_factor_sum
+        c = new PickerRankingExpressionAggregationComponent(
+            "rsa", "tourism_factor",
+            PickerRankingExpressionAggregationComponent.AggregationFunction.SUM
+        );
+        pickerRankingBindings.add(
+            c.componentString(),
+            new MatchsetAggregatedVirtualField(taxoReader, facetsConfig, globalBindings, c, countryFc)
+                .getDoubleValuesSource());
+
+        /**
+         * We will compute rsa_csa_population_max_max next.
+         * This requires mapping msa_population_max (keyed by country code ordinal),
+         * to country docids and then to region ordinals.
+         *
+         * msa_population_max -> country_code ordinals
+         * 								  V
+         * csa_population_max ->	country docs
+         * 									V
+         * rsa_msa_population_max_max -> region ordinals
+         */
+
+        // Define csa_population_max
+        DoubleValuesSource csaPopMax = new NestedAggregationDoubleValuesSource(
+            pickerRankingBindings.getDoubleValuesSource("msa_population_max").getValues(null, null),
+            taxoReader,
+            "country_code",
+            "cc"
+        );
+
+        // Add csa_population_max as global binding, so MatchsetAggregatedVirtualField finds it
+        globalBindings.add("csa_population_max", csaPopMax);
+
+        // Add csa_population_max
+        c = new PickerRankingExpressionAggregationComponent(
+            "rsa", "csa_population_max",
+            PickerRankingExpressionAggregationComponent.AggregationFunction.MAX
+        );
+        pickerRankingBindings.add(
+            c.componentString(),
+            new MatchsetAggregatedVirtualField(taxoReader, facetsConfig, globalBindings, c, countryFc)
+                .getDoubleValuesSource());
+
         // [6] Get all the unique ordinals present in the matchset (across all dimensions):
         BitSet ordinalsInMatchset = getOrdinalsForHits(taxoReader, poiFc);
 
+        // Also get ordinals for country docs
         BitSet ordinalsInCountryMatchset = getOrdinalsForHits(taxoReader, countryFc);
 
-        // [7] Facet our two dimensions and print all the individual components that went into the
+        // [7] Facet our two dimensions and print some of the individual components that went into the
         // picker ranking expression (simulating return fields):
         doSingleDimFaceting(
             pickerRankingBindings,
@@ -209,19 +266,27 @@ public class PickerRanking {
             pickerRankingComponents,
             taxoReader);
 
-//        doSingleDimFaceting(
-//            pickerRankingBindings,
-//            timezoneRankingExpression,
-//            ordinalsInMatchset,
-//            "tz",
-//            pickerRankingComponents,
-//            taxoReader);
+        doSingleDimFaceting(
+            pickerRankingBindings,
+            timezoneRankingExpression,
+            ordinalsInMatchset,
+            "tz",
+            pickerRankingComponents,
+            taxoReader);
 
         doSingleDimFaceting(
             pickerRankingBindings,
             countryRankingExpression,
             ordinalsInCountryMatchset,
             "country_code",
+            pickerRankingComponents,
+            taxoReader);
+
+        doSingleDimFaceting(
+            pickerRankingBindings,
+            regionRankingExpression,
+            ordinalsInCountryMatchset,
+            "region",
             pickerRankingComponents,
             taxoReader);
       }
@@ -265,23 +330,23 @@ public class PickerRanking {
     Set<PickerRankingExpressionAggregationComponent> components = new HashSet<>();
     components.add(
         new PickerRankingExpressionAggregationComponent(
-            "ONE", PickerRankingExpressionAggregationComponent.AggregationFunction.SUM));
+            "msa", "ONE", PickerRankingExpressionAggregationComponent.AggregationFunction.SUM));
     components.add(
         new PickerRankingExpressionAggregationComponent(
-            "elevation", PickerRankingExpressionAggregationComponent.AggregationFunction.MAX));
+            "msa", "elevation", PickerRankingExpressionAggregationComponent.AggregationFunction.MAX));
     components.add(
         new PickerRankingExpressionAggregationComponent(
-            "population", PickerRankingExpressionAggregationComponent.AggregationFunction.SUM));
+            "msa", "population", PickerRankingExpressionAggregationComponent.AggregationFunction.SUM));
     components.add(
         new PickerRankingExpressionAggregationComponent(
-            "population", PickerRankingExpressionAggregationComponent.AggregationFunction.MAX));
+            "msa", "population", PickerRankingExpressionAggregationComponent.AggregationFunction.MAX));
     components.add(
         new PickerRankingExpressionAggregationComponent(
-            "distance_from_seattle",
+            "msa", "distance_from_seattle",
             PickerRankingExpressionAggregationComponent.AggregationFunction.MAX));
     components.add(
         new PickerRankingExpressionAggregationComponent(
-            "is_westcoast_tz",
+            "msa", "is_westcoast_tz",
             PickerRankingExpressionAggregationComponent.AggregationFunction.MAX));
     return components;
   }
@@ -375,6 +440,7 @@ public class PickerRanking {
       TextField type = new TextField("type", "country", Field.Store.NO);
       doc.add(type);
       addFacetField(doc, "country_code", countryCodes[i]);
+      doc.add(new BinaryDocValuesField("cc", new BytesRef(countryCodes[i])));
       addFacetField(doc, "region", regions[i]);
       addDoubleField(doc, "tourism_factor", String.valueOf(tourismFactor[i]));
       iw.addDocument(facetsConfig.build(tw, doc));

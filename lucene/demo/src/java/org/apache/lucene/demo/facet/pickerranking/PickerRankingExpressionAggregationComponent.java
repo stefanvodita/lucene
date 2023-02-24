@@ -2,13 +2,13 @@ package org.apache.lucene.demo.facet.pickerranking;
 
 import org.apache.lucene.facet.taxonomy.AssociationAggregationFunction;
 
-/** Represents a parsed picker ranking expression component (field, function). */
+/** Represents a parsed ranking expression component (field, function). */
 record PickerRankingExpressionAggregationComponent(
-    String matchsetFieldName, AggregationFunction aggregationFunction) {
+    String matchsetName, String matchsetFieldName, AggregationFunction aggregationFunction) {
 
   /** Generate the expected component string representation in a picker ranking expression. */
   String componentString() {
-    return "msa_" + matchsetFieldName + "_" + aggregationFunction.name();
+    return matchsetName + "_" + matchsetFieldName + "_" + aggregationFunction.name();
   }
 
   abstract static class AggregationFunction {
