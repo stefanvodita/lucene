@@ -29,6 +29,7 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.DoublePoint;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.StringField;
@@ -57,6 +58,7 @@ import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.LockObtainFailedException;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.NumericUtils;
 
 /**
  * {@link TaxonomyWriter} which uses a {@link Directory} to store the taxonomy information on disk,
@@ -377,6 +379,11 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
 
   @Override
   public int addCategory(FacetLabel categoryPath) throws IOException {
+    return addCategory(categoryPath, null);
+  }
+
+  @Override
+  public int addCategory(FacetLabel categoryPath, String ordinalData) throws IOException {
     ensureOpen();
     // check the cache outside the synchronized block. this results in better
     // concurrency when categories are there.
@@ -384,7 +391,7 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
     if (res < 0) {
       // the category is not in the cache - following code cannot be executed in parallel.
       synchronized (this) {
-        res = findCategory(categoryPath);
+//        res = findCategory(categoryPath);
         if (res < 0) {
           // This is a new category, and we need to insert it into the index
           // (and the cache). Actually, we might also need to add some of
@@ -392,7 +399,7 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
           // (while keeping the invariant that a parent is always added to
           // the taxonomy before its child). internalAddCategory() does all
           // this recursively
-          res = internalAddCategory(categoryPath);
+          res = internalAddCategory(categoryPath, ordinalData);
         }
       }
     }
@@ -407,6 +414,10 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
    * before its child). We do this by recursion.
    */
   private int internalAddCategory(FacetLabel cp) throws IOException {
+    return internalAddCategory(cp, null);
+  }
+
+  private int internalAddCategory(FacetLabel cp, String ordinalData) throws IOException {
     // Find our parent's ordinal (recursively adding the parent category
     // to the taxonomy if it's not already there). Then add the parent
     // ordinal as payloads (rather than a stored field; payloads can be
@@ -423,7 +434,7 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
     } else {
       parent = TaxonomyReader.INVALID_ORDINAL;
     }
-    return addCategoryDocument(cp, parent);
+    return addCategoryDocument(cp, parent, ordinalData);
   }
 
   /**
@@ -440,6 +451,10 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
    * effectively synchronized as well.
    */
   private int addCategoryDocument(FacetLabel categoryPath, int parent) throws IOException {
+    return addCategoryDocument(categoryPath, parent, null);
+  }
+
+  private int addCategoryDocument(FacetLabel categoryPath, int parent, String ordinalData) throws IOException {
     Document d = new Document();
     /* Lucene 9 switches to NumericDocValuesField for storing parent ordinals */
     d.add(new NumericDocValuesField(Consts.FIELD_PARENT_ORDINAL_NDV, parent));
@@ -451,6 +466,10 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
     d.add(new BinaryDocValuesField(Consts.FULL, new BytesRef(fieldPath)));
 
     d.add(fullPathField);
+
+    if (ordinalData != null) {
+      addDoubleField(d, "ordinal-data", ordinalData);
+    }
 
     indexWriter.addDocument(d);
     int id = nextID.getAndIncrement();
@@ -466,6 +485,19 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
     addToCache(categoryPath, id);
 
     return id;
+  }
+
+  private static void addDoubleField(Document doc, String fieldName, String val) {
+    try {
+      double d = Double.parseDouble(val);
+      DoublePoint p = new DoublePoint(fieldName, d);
+      doc.add(p);
+      NumericDocValuesField n =
+          new NumericDocValuesField(fieldName, NumericUtils.doubleToSortableLong(d));
+      doc.add(n);
+    } catch (NumberFormatException e) {
+      // nothing
+    }
   }
 
   private void addToCache(FacetLabel categoryPath, int id) throws IOException {

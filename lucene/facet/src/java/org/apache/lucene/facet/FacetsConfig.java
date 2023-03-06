@@ -257,6 +257,10 @@ public class FacetsConfig {
    * <p><b>NOTE:</b> you should add the returned document to IndexWriter, not the input one!
    */
   public Document build(TaxonomyWriter taxoWriter, Document doc) throws IOException {
+    return build(taxoWriter, doc, null);
+  }
+
+  public Document build(TaxonomyWriter taxoWriter, Document doc, String ordinalData) throws IOException {
     // Find all FacetFields, collated by the actual field:
     Map<String, List<FacetField>> byField = new HashMap<>();
 
@@ -341,7 +345,7 @@ public class FacetsConfig {
 
     Document result = new Document();
 
-    processFacetFields(taxoWriter, byField, result);
+    processFacetFields(taxoWriter, byField, result, ordinalData);
     processSSDVFacetFields(dvByField, result);
     processAssocFacetFields(taxoWriter, assocByField, result);
 
@@ -359,6 +363,12 @@ public class FacetsConfig {
 
   private void processFacetFields(
       TaxonomyWriter taxoWriter, Map<String, List<FacetField>> byField, Document doc)
+      throws IOException {
+    processFacetFields(taxoWriter, byField, doc, null);
+  }
+
+  private void processFacetFields(
+      TaxonomyWriter taxoWriter, Map<String, List<FacetField>> byField, Document doc, String ordinalData)
       throws IOException {
 
     for (Map.Entry<String, List<FacetField>> ent : byField.entrySet()) {
@@ -380,7 +390,7 @@ public class FacetsConfig {
         FacetLabel facetLabel = new FacetLabel(facetField.dim, facetField.path);
 
         checkTaxoWriter(taxoWriter);
-        int ordinal = taxoWriter.addCategory(facetLabel);
+        int ordinal = taxoWriter.addCategory(facetLabel, ordinalData);
         ordinals.append(ordinal);
 
         if (dimConfig.multiValued && (dimConfig.hierarchical || dimConfig.requireDimCount)) {

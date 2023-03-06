@@ -58,6 +58,8 @@ public interface TaxonomyWriter extends Closeable, TwoPhaseCommit {
    */
   public int addCategory(FacetLabel categoryPath) throws IOException;
 
+  public int addCategory(FacetLabel categoryPath, String ordinalData) throws IOException;
+
   /**
    * getParent() returns the ordinal of the parent category of the category with the given ordinal.
    *
