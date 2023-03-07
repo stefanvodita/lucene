@@ -393,12 +393,9 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
     if (res < 0) {
       // the category is not in the cache - following code cannot be executed in parallel.
       synchronized (this) {
+        // Disable findCategory so that when we first encounter a category, we index a doc
+        // instead of just caching the path and ordinal.
 //        res = findCategory(categoryPath);
-//        if (isFirst) {
-//          res = findCategory(categoryPath);
-//          isFirst = false;
-//          return res;
-//        }
         if (res < 0) {
           // This is a new category, and we need to insert it into the index
           // (and the cache). Actually, we might also need to add some of
@@ -476,8 +473,6 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
 
     if (ordinalData != null) {
       addDoubleField(d, "ordinal-data", ordinalData);
-    } else {
-//      addDoubleField(d, "ordinal-data", "0");
     }
 
     indexWriter.addDocument(d);
