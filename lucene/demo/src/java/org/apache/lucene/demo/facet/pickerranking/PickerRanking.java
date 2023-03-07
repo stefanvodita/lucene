@@ -52,6 +52,7 @@ import org.apache.lucene.facet.taxonomy.TaxonomyReader;
 import org.apache.lucene.facet.taxonomy.TaxonomyWriter;
 import org.apache.lucene.facet.taxonomy.directory.DirectoryTaxonomyReader;
 import org.apache.lucene.facet.taxonomy.directory.DirectoryTaxonomyWriter;
+import org.apache.lucene.index.BinaryDocValues;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.IndexWriter;
@@ -183,7 +184,7 @@ public class PickerRanking {
 //        String countryRankingExpression =
 //            "csa_tourism_factor_d2o * msa_population_sum / msa_ONE_sum";
         String countryCodeRankingExpression2 =
-            "tourism_factor";
+            "tourism_factor * msa_population_sum";
 
         // rsa = region-set aggregation
         // rsa_csa_population_max_max = max(max(population for population in country) for country in region)
@@ -224,6 +225,8 @@ public class PickerRanking {
         DoubleValuesSource ordinalData = new DoubleValuesSource() {
           final NumericDocValues ordinalData = ((DirectoryTaxonomyReader) taxoReader).getInternalIndexReader()
               .leaves().get(1).reader().getNumericDocValues("ordinal-data");
+          final BinaryDocValues fullPath = ((DirectoryTaxonomyReader) taxoReader).getInternalIndexReader()
+              .leaves().get(1).reader().getBinaryDocValues("$full_path$");
           final SortedNumericDocValues docIdToOrdMap = DocValues.getSortedNumeric(reader.leaves().get(0).reader(),
               FacetsConfig.DEFAULT_INDEX_FIELD_NAME);
 
@@ -233,20 +236,25 @@ public class PickerRanking {
 
               @Override
               public double doubleValue() throws IOException {
-                return Double.longBitsToDouble(ordinalData.longValue());
+                double ret = Double.longBitsToDouble(ordinalData.longValue());
+                return ret;
               }
 
               @Override
               public boolean advanceExact(int doc) throws IOException {
-                if (docIdToOrdMap.advanceExact(doc) == false) {
-                  System.out.println("There are no ordinals for doc " + doc);
-                }
-                int ord = 0;
-                for (int i = 0; i < docIdToOrdMap.docValueCount(); i++) {
-                  ord = (int) docIdToOrdMap.nextValue();
-                }
-                return ordinalData.advanceExact(ord);
-//                return ordinalData.advanceExact(doc - 1);
+//                if (docIdToOrdMap.advanceExact(doc) == false) {
+//                  System.out.println("There are no ordinals for doc " + doc);
+//                }
+//                int ord = 0;
+//                for (int i = 0; i < docIdToOrdMap.docValueCount(); i++) {
+//                  ord = (int) docIdToOrdMap.nextValue();
+//                }
+//                return ordinalData.advanceExact(ord);
+                boolean ret = ordinalData.advanceExact(doc - 1);
+                fullPath.advanceExact(doc - 1);
+                System.out.println(doc + " " + fullPath.binaryValue().utf8ToString()
+                    + " "  + Double.longBitsToDouble(ordinalData.longValue()));
+                return ret;
               }
             };
           }

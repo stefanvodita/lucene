@@ -88,6 +88,8 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
 
   private static final int DEFAULT_CACHE_SIZE = 4000;
 
+  private boolean isFirst = true;
+
   private final Directory dir;
   private final IndexWriter indexWriter;
   private final TaxonomyWriterCache cache;
@@ -392,6 +394,11 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
       // the category is not in the cache - following code cannot be executed in parallel.
       synchronized (this) {
 //        res = findCategory(categoryPath);
+//        if (isFirst) {
+//          res = findCategory(categoryPath);
+//          isFirst = false;
+//          return res;
+//        }
         if (res < 0) {
           // This is a new category, and we need to insert it into the index
           // (and the cache). Actually, we might also need to add some of
@@ -469,6 +476,8 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
 
     if (ordinalData != null) {
       addDoubleField(d, "ordinal-data", ordinalData);
+    } else {
+//      addDoubleField(d, "ordinal-data", "0");
     }
 
     indexWriter.addDocument(d);
@@ -483,6 +492,8 @@ public class DirectoryTaxonomyWriter implements TaxonomyWriter {
     // NOTE: this line must be executed last, or else the cache gets updated
     // before the parents array (LUCENE-4596)
     addToCache(categoryPath, id);
+
+    System.out.println(id + " " + d.getFields());
 
     return id;
   }
