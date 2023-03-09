@@ -23,6 +23,7 @@ import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FloatDocValuesField;
 import org.apache.lucene.document.KeywordField;
 import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.expressions.Bindings;
 import org.apache.lucene.expressions.SimpleBindings;
 import org.apache.lucene.expressions.js.JavascriptCompiler;
 import org.apache.lucene.facet.FacetField;
@@ -64,8 +65,10 @@ public class ExpressionFacetsExample {
 
     // Assign each facet label a weight based on inverse average distance of all its cities and
     // average population of all its cities.
-    String facetExpression =
+    String facetExpression1 =
         "1000 * ln(1 + (1 / (val_distance_sum / val_ONE_sum))) + (val_population_sum / val_ONE_sum)";
+    String facetExpression2 =
+        "(val_distance_max > 5000 ? val_distance_max : val_distance_sum) / val_ONE_sum";
 
     ExpressionFacetsExample example = new ExpressionFacetsExample();
     example.index();
@@ -86,15 +89,42 @@ public class ExpressionFacetsExample {
     printFacetResults(example.facetBySumPopulation());
     System.out.println();
 
-    System.out.println("Facet by " + facetExpression + ":");
+    System.out.println("Facet by " + facetExpression1 + ":");
     System.out.println("-----------------------");
-    printFacetResults(example.facetByExpression(facetExpression));
+    printFacetResults(example.facetByExpression(facetExpression1));
+    System.out.println();
+
+    System.out.println("-----------------------");
+    printCachedVariables(example.bindings, new String[] {
+        "val_distance_sum", "val_ONE_sum", "val_population_sum", "val_distance_max"});
+    System.out.println("-----------------------");
+    System.out.println();
+
+    // At this point we've already computed most of the aggregations
+    // used in expression 2 when we were working on expression 1.
+    // This means the bindings object contains values keyed on
+    // docids (the original bindings) and values keyed on ordinals
+    // (the aggregations).
+    System.out.println("Facet by " + facetExpression2 + ":");
+    System.out.println("-----------------------");
+    printFacetResults(example.facetByExpression(facetExpression2));
     System.out.println();
   }
 
   private static void printFacetResults(FacetResult facetResult) {
     for (LabelAndValue e : facetResult.labelValues) {
       System.out.println(e);
+    }
+  }
+
+  private static void printCachedVariables(Bindings bindings, String[] variableNames) {
+    for (String variableName : variableNames) {
+      try {
+        bindings.getDoubleValuesSource(variableName);
+        System.out.println(variableName + " is bound.");
+      } catch (IllegalArgumentException ignore) {
+        System.out.println(variableName + " is not bound.");
+      }
     }
   }
 

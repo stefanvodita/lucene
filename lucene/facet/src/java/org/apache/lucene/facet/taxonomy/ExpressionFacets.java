@@ -65,12 +65,11 @@ public class ExpressionFacets extends FloatTaxonomyFacets {
       FacetsConfig config,
       FacetsCollector facetsCollector,
       String expression,
-      Bindings bindings)
+      SimpleBindings bindings)
       throws IOException, ParseException {
     super(indexFieldName, taxoReader, AssociationAggregationFunction.SUM, config);
     Set<FieldAggregation> aggregations = parseAggregations(expression);
-    SimpleBindings aggregationBindings = new SimpleBindings();
-    aggregate(expression, bindings, aggregationBindings, aggregations, facetsCollector);
+    aggregate(expression, bindings, aggregations, facetsCollector);
   }
 
   /**
@@ -123,13 +122,18 @@ public class ExpressionFacets extends FloatTaxonomyFacets {
 
   private void aggregate(
       String expression,
-      Bindings bindings,
-      SimpleBindings aggregationBindings,
+      SimpleBindings bindings,
       Set<FieldAggregation> aggregations,
       FacetsCollector facetsCollector)
       throws IOException, ParseException {
     // Compute component aggregations:
     for (FieldAggregation fa : aggregations) {
+      // Check if this aggregation has already been computed
+      try {
+        bindings.getDoubleValuesSource(fa.id);
+        continue;
+      } catch (IllegalArgumentException ignore) { }
+
       // Leverage association faceting to compute each individual component aggregation:
       DoubleValuesSource dvs = bindings.getDoubleValuesSource(fa.valueSource);
       TaxonomyFacetFloatAssociations f =
@@ -137,9 +141,7 @@ public class ExpressionFacets extends FloatTaxonomyFacets {
               indexFieldName, taxoReader, config, facetsCollector, fa.aggregationFunction, dvs);
       // Wrap the computed aggregation values in a DoubleValuesSource that's ordinal-based and
       // register it with the bindings keyed on the original expression binding name:
-      float[] values = f.values;
-      AggregationBinding binding = new AggregationBinding(fa.id, values);
-      aggregationBindings.add(fa.id, binding);
+      bindings.add(fa.id, new AggregationBinding(fa.id, f.values));
     }
 
     // Find all the unique ordinals represented in the facets collector:
@@ -159,7 +161,7 @@ public class ExpressionFacets extends FloatTaxonomyFacets {
     // Ordinal-based double values sources; global (null context is ok):
     DoubleValues expressionValues =
         JavascriptCompiler.compile(expression)
-            .getDoubleValuesSource(aggregationBindings)
+            .getDoubleValuesSource(bindings)
             .getValues(null, null);
     int ord = -1;
     while (true) {
