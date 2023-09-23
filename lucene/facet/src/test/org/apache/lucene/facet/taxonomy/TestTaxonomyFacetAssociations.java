@@ -41,6 +41,7 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
+import org.apache.lucene.search.Query;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.apache.lucene.util.BitUtil;
@@ -512,6 +513,67 @@ public class TestTaxonomyFacetAssociations extends FacetTestCase {
         "Wrong count for category 'a'!", 100, facets.getSpecificValue("int", "a").intValue());
     assertEquals(
         "Wrong count for category 'b'!", 150, facets.getSpecificValue("int", "b").intValue());
+  }
+
+  public void testNonPositiveAggregations() throws IOException {
+    Directory dir = newDirectory();
+    Directory taxoDir = newDirectory();
+
+    TaxonomyWriter taxoWriter = new DirectoryTaxonomyWriter(taxoDir);
+
+    FacetsConfig config = new FacetsConfig();
+    config.setIndexFieldName("a", FacetsConfig.DEFAULT_INDEX_FIELD_NAME);
+
+    RandomIndexWriter writer = new RandomIndexWriter(random(), dir);
+    Document d;
+
+    d = new Document();
+    // A value of 1 for a/1. This is ok.
+    d.add(new FloatAssociationFacetField(1f, "a", "1"));
+    writer.addDocument(config.build(taxoWriter, d));
+
+    d = new Document();
+    // A value of 0 for a/2. This will get discarded because it not greater than zero.
+    // See line 219 in FloatTaxonomyFacets.
+    d.add(new FloatAssociationFacetField(0f, "a", "2"));
+    writer.addDocument(config.build(taxoWriter, d));
+
+    d = new Document();
+    // A value of -1 for a/3. This gets discarded like 0.
+    // Even if it weren't discarded in that initial check, it would not be placed in the queue
+    // because the bottom value of the queue is initialized with 0.
+    // See line 222 in FloatTaxonomyFacets.
+    d.add(new FloatAssociationFacetField(-1f, "a", "3"));
+    writer.addDocument(config.build(taxoWriter, d));
+
+    IndexReader reader = writer.getReader();
+    IOUtils.close(taxoWriter, writer);
+
+    IndexSearcher searcher = newSearcher(reader);
+    Query q = new MatchAllDocsQuery();
+    FacetsCollector fc = searcher.search(q, new FacetsCollectorManager());
+
+    TaxonomyReader taxoReader = new DirectoryTaxonomyReader(taxoDir);
+    FloatTaxonomyFacets facets =
+        new TaxonomyFacetFloatAssociations(
+            FacetsConfig.DEFAULT_INDEX_FIELD_NAME,
+            taxoReader,
+            config,
+            fc,
+            AssociationAggregationFunction.SUM);
+
+    // This is the result we get. "2" and "3" are discarded from the result because
+    // they have non-positive values associated to them.
+    assertEquals(
+        "dim=a path=[] value=1.0 childCount=1\n  1 (1.0)\n",
+        facets.getTopChildren(10, "a").toString());
+
+    // This is the result we would get if we didn't discard non-positive aggregation values.
+    assertEquals(
+        "dim=a path=[] value=0.0 childCount=3\n  1 (1.0)\n  2 (0.0)\n  3 (-1.0)\n",
+        facets.getTopChildren(10, "a").toString());
+
+    IOUtils.close(taxoReader, reader, taxoDir, dir);
   }
 
   private void validateInts(
