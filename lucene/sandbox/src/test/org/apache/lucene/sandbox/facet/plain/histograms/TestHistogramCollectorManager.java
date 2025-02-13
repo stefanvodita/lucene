@@ -25,6 +25,8 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.internal.hppc.LongIntHashMap;
+import org.apache.lucene.sandbox.facet.FacetFieldCollectorManager;
+import org.apache.lucene.sandbox.facet.recorders.CountFacetRecorder;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Sort;
@@ -50,16 +52,24 @@ public class TestHistogramCollectorManager extends LuceneTestCase {
     DirectoryReader reader = DirectoryReader.open(w);
     w.close();
     IndexSearcher searcher = newSearcher(reader);
-    LongIntHashMap actualCounts =
-        searcher.search(new MatchAllDocsQuery(), new HistogramCollectorManager("f", 4));
-    LongIntHashMap expectedCounts = new LongIntHashMap();
-    expectedCounts.put(0, 1);
-    expectedCounts.put(1, 2);
-    assertEquals(expectedCounts, actualCounts);
 
+    CountFacetRecorder recorder = new CountFacetRecorder();
+    HistogramFacetCutter cutter = new HistogramFacetCutter("f", 4);
+    FacetFieldCollectorManager<CountFacetRecorder> collectorManager =
+        new FacetFieldCollectorManager<>(cutter, recorder);
+
+    searcher.search(new MatchAllDocsQuery(), collectorManager);
+    assertEquals(2, recorder.recordedOrds().toArray().length);
+    assertEquals(1, recorder.getCount(0));
+    assertEquals(2, recorder.getCount(1));
+
+    recorder = new CountFacetRecorder();
+    cutter = new HistogramFacetCutter("f", 4, 1);
+    FacetFieldCollectorManager<CountFacetRecorder> finalCollectorManager =
+        new FacetFieldCollectorManager<>(cutter, recorder);
     expectThrows(
         IllegalStateException.class,
-        () -> searcher.search(new MatchAllDocsQuery(), new HistogramCollectorManager("f", 4, 1)));
+        () -> searcher.search(new MatchAllDocsQuery(), finalCollectorManager));
 
     reader.close();
     dir.close();
@@ -80,17 +90,25 @@ public class TestHistogramCollectorManager extends LuceneTestCase {
     DirectoryReader reader = DirectoryReader.open(w);
     w.close();
     IndexSearcher searcher = newSearcher(reader);
-    LongIntHashMap actualCounts =
-        searcher.search(new MatchAllDocsQuery(), new HistogramCollectorManager("f", 4));
-    LongIntHashMap expectedCounts = new LongIntHashMap();
-    expectedCounts.put(0, 1);
-    expectedCounts.put(1, 1);
-    expectedCounts.put(2, 2);
-    assertEquals(expectedCounts, actualCounts);
 
+    CountFacetRecorder recorder = new CountFacetRecorder();
+    HistogramFacetCutter cutter = new HistogramFacetCutter("f", 4);
+    FacetFieldCollectorManager<CountFacetRecorder> collectorManager =
+        new FacetFieldCollectorManager<>(cutter, recorder);
+
+    searcher.search(new MatchAllDocsQuery(), collectorManager);
+    assertEquals(3, recorder.recordedOrds().toArray().length);
+    assertEquals(1, recorder.getCount(0));
+    assertEquals(1, recorder.getCount(1));
+    assertEquals(2, recorder.getCount(2));
+
+    recorder = new CountFacetRecorder();
+    cutter = new HistogramFacetCutter("f", 4, 1);
+    FacetFieldCollectorManager<CountFacetRecorder> finalCollectorManager =
+        new FacetFieldCollectorManager<>(cutter, recorder);
     expectThrows(
         IllegalStateException.class,
-        () -> searcher.search(new MatchAllDocsQuery(), new HistogramCollectorManager("f", 4, 1)));
+        () -> searcher.search(new MatchAllDocsQuery(), finalCollectorManager));
 
     reader.close();
     dir.close();
@@ -125,17 +143,29 @@ public class TestHistogramCollectorManager extends LuceneTestCase {
     DirectoryReader reader = DirectoryReader.open(w);
     w.close();
     IndexSearcher searcher = newSearcher(reader);
-    LongIntHashMap actualCounts =
-        searcher.search(new MatchAllDocsQuery(), new HistogramCollectorManager("f", 4));
+
+    CountFacetRecorder recorder = new CountFacetRecorder();
+    HistogramFacetCutter cutter = new HistogramFacetCutter("f", 4);
+    FacetFieldCollectorManager<CountFacetRecorder> collectorManager =
+        new FacetFieldCollectorManager<>(cutter, recorder);
+
+    searcher.search(new MatchAllDocsQuery(), collectorManager);
     LongIntHashMap expectedCounts = new LongIntHashMap();
     for (long value : values) {
       expectedCounts.addTo(Math.floorDiv(value, 4), 1);
     }
-    assertEquals(expectedCounts, actualCounts);
+    assertEquals(expectedCounts.size(), recorder.recordedOrds().toArray().length);
+    for (LongIntHashMap.LongIntCursor cursor : expectedCounts) {
+      assertEquals(cursor.value, recorder.getCount((int) cursor.key));
+    }
 
+    recorder = new CountFacetRecorder();
+    cutter = new HistogramFacetCutter("f", 4, 1);
+    FacetFieldCollectorManager<CountFacetRecorder> finalCollectorManager =
+        new FacetFieldCollectorManager<>(cutter, recorder);
     expectThrows(
         IllegalStateException.class,
-        () -> searcher.search(new MatchAllDocsQuery(), new HistogramCollectorManager("f", 4, 1)));
+        () -> searcher.search(new MatchAllDocsQuery(), finalCollectorManager));
 
     reader.close();
     dir.close();

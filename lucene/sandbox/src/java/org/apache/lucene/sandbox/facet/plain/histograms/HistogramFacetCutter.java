@@ -17,6 +17,8 @@
 package org.apache.lucene.sandbox.facet.plain.histograms;
 
 import java.io.IOException;
+import java.util.Objects;
+import org.apache.lucene.document.FieldType;
 import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.DocValuesSkipper;
 import org.apache.lucene.index.DocValuesType;
@@ -25,28 +27,68 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.internal.hppc.LongIntHashMap;
+import org.apache.lucene.sandbox.facet.cutters.FacetCutter;
+import org.apache.lucene.sandbox.facet.cutters.LeafFacetCutter;
+import org.apache.lucene.sandbox.facet.iterators.OrdinalIterator;
 import org.apache.lucene.search.CollectionTerminatedException;
-import org.apache.lucene.search.Collector;
+import org.apache.lucene.search.CollectorManager;
 import org.apache.lucene.search.LeafCollector;
-import org.apache.lucene.search.Scorable;
-import org.apache.lucene.search.ScoreMode;
 
-final class HistogramCollector implements Collector {
+/**
+ * {@link CollectorManager} that computes a histogram of the distribution of the values of a field.
+ *
+ * <p>It takes an {@code bucketWidth} as a parameter and counts the number of documents that fall
+ * into intervals [0, bucketWidth), [bucketWidth, 2*bucketWidth), etc. The keys of the returned
+ * {@link LongIntHashMap} identify these intervals as the quotient of the integer division by {@code
+ * bucketWidth}. Said otherwise, a key equal to {@code k} maps to values in the interval {@code [k *
+ * bucketWidth, (k+1) * bucketWidth)}.
+ *
+ * <p>This implementation is optimized for the case when {@code field} is part of the index sort and
+ * has a {@link FieldType#setDocValuesSkipIndexType skip index}.
+ *
+ * <p>Note: this collector is inspired from "YU, Muzhi, LIN, Zhaoxiang, SUN, Jinan, et al.
+ * TencentCLS: the cloud log service with high query performances. Proceedings of the VLDB
+ * Endowment, 2022, vol. 15, no 12, p. 3472-3482.", where the authors describe how they run
+ * "histogram queries" by sorting the index by timestamp and pre-computing ranges of doc IDs for
+ * every possible bucket.
+ */
+public final class HistogramFacetCutter implements FacetCutter {
+
+  private static final int DEFAULT_MAX_BUCKETS = 1024;
 
   private final String field;
   private final long bucketWidth;
   private final int maxBuckets;
-  private final LongIntHashMap counts;
 
-  HistogramCollector(String field, long bucketWidth, int maxBuckets) {
-    this.field = field;
+  /**
+   * Compute a histogram of the distribution of the values of the given {@code field} according to
+   * the given {@code bucketWidth}. This configures a maximum number of buckets equal to the default
+   * of 1024.
+   */
+  public HistogramFacetCutter(String field, long bucketWidth) {
+    this(field, bucketWidth, DEFAULT_MAX_BUCKETS);
+  }
+
+  /**
+   * Expert constructor.
+   *
+   * @param maxBuckets Max allowed number of buckets. Note that this is checked at runtime and on a
+   *     best-effort basis.
+   */
+  public HistogramFacetCutter(String field, long bucketWidth, int maxBuckets) {
+    this.field = Objects.requireNonNull(field);
+    if (bucketWidth < 2) {
+      throw new IllegalArgumentException("bucketWidth must be at least 2, got: " + bucketWidth);
+    }
     this.bucketWidth = bucketWidth;
+    if (maxBuckets < 1) {
+      throw new IllegalArgumentException("maxBuckets must be at least 1, got: " + maxBuckets);
+    }
     this.maxBuckets = maxBuckets;
-    this.counts = new LongIntHashMap();
   }
 
   @Override
-  public LeafCollector getLeafCollector(LeafReaderContext context) throws IOException {
+  public LeafFacetCutter createLeafCutter(LeafReaderContext context) throws IOException {
     FieldInfo fi = context.reader().getFieldInfos().fieldInfo(field);
     if (fi == null) {
       // The segment has no values, nothing to do.
@@ -60,7 +102,7 @@ final class HistogramCollector implements Collector {
     SortedNumericDocValues values = DocValues.getSortedNumeric(context.reader(), field);
     NumericDocValues singleton = DocValues.unwrapSingleton(values);
     if (singleton == null) {
-      return new HistogramNaiveLeafCollector(values, bucketWidth, maxBuckets, counts);
+      return new HistogramNaiveLeafFacetCutter(values, bucketWidth, maxBuckets);
     } else {
       DocValuesSkipper skipper = context.reader().getDocValuesSkipper(field);
       if (skipper != null) {
@@ -70,62 +112,60 @@ final class HistogramCollector implements Collector {
           // Only use the optimized implementation if there is a small number of unique buckets,
           // so that we can count them using a dense array instead of a hash table. This helps save
           // the overhead of hashing and collision resolution.
-          return new HistogramLeafCollector(singleton, skipper, bucketWidth, maxBuckets, counts);
+          return new HistogramLeafFacetCutter(singleton, skipper, bucketWidth, maxBuckets);
         }
       }
-      return new HistogramNaiveSingleValuedLeafCollector(
-          singleton, bucketWidth, maxBuckets, counts);
+      return new HistogramNaiveSingleValuedLeafFacetCutter(singleton, bucketWidth, maxBuckets);
     }
-  }
-
-  @Override
-  public ScoreMode scoreMode() {
-    return ScoreMode.COMPLETE_NO_SCORES;
-  }
-
-  LongIntHashMap getCounts() {
-    return counts;
   }
 
   /**
    * Naive implementation of a histogram {@link LeafCollector}, which iterates all maches and looks
    * up the value to determine the corresponding bucket.
    */
-  private static class HistogramNaiveLeafCollector implements LeafCollector {
+  private static class HistogramNaiveLeafFacetCutter implements LeafFacetCutter {
 
     private final SortedNumericDocValues values;
     private final long bucketWidth;
     private final int maxBuckets;
-    private final LongIntHashMap counts;
 
-    HistogramNaiveLeafCollector(
-        SortedNumericDocValues values, long bucketWidth, int maxBuckets, LongIntHashMap counts) {
+    HistogramNaiveLeafFacetCutter(SortedNumericDocValues values, long bucketWidth, int maxBuckets) {
       this.values = values;
       this.bucketWidth = bucketWidth;
       this.maxBuckets = maxBuckets;
-      this.counts = counts;
+    }
+
+    private int valueCount;
+    private int currentValueIdx = 0;
+    private long prevBucket = Long.MIN_VALUE;
+
+    @Override
+    public boolean advanceExact(int doc) throws IOException {
+      if (values.advanceExact(doc)) {
+        valueCount = values.docValueCount();
+        currentValueIdx = 0;
+        prevBucket = Long.MIN_VALUE;
+        return true;
+      }
+      return false;
     }
 
     @Override
-    public void setScorer(Scorable scorer) throws IOException {}
-
-    @Override
-    public void collect(int doc) throws IOException {
-      if (values.advanceExact(doc)) {
-        int valueCount = values.docValueCount();
-        long prevBucket = Long.MIN_VALUE;
-        for (int i = 0; i < valueCount; ++i) {
-          final long value = values.nextValue();
-          final long bucket = Math.floorDiv(value, bucketWidth);
-          // We must not double-count values that map to the same bucket since this returns doc
-          // counts as opposed to value counts.
-          if (bucket != prevBucket) {
-            counts.addTo(bucket, 1);
-            checkMaxBuckets(counts.size(), maxBuckets);
-            prevBucket = bucket;
-          }
+    public int nextOrd() throws IOException {
+      int bucket;
+      do {
+        if (currentValueIdx++ == valueCount) {
+          return OrdinalIterator.NO_MORE_ORDS;
         }
-      }
+
+        final long value = values.nextValue();
+        bucket = (int) Math.floorDiv(value, bucketWidth);
+      } while (bucket == prevBucket);
+      // We must not double-count values that map to the same bucket since this returns doc
+      // counts as opposed to value counts.
+      checkMaxBuckets(bucket, maxBuckets);
+      prevBucket = bucket;
+      return bucket;
     }
   }
 
@@ -133,32 +173,40 @@ final class HistogramCollector implements Collector {
    * Naive implementation of a histogram {@link LeafCollector}, which iterates all maches and looks
    * up the value to determine the corresponding bucket.
    */
-  private static class HistogramNaiveSingleValuedLeafCollector implements LeafCollector {
+  private static class HistogramNaiveSingleValuedLeafFacetCutter implements LeafFacetCutter {
 
     private final NumericDocValues values;
     private final long bucketWidth;
     private final int maxBuckets;
-    private final LongIntHashMap counts;
+    private int bucket;
+    private boolean isConsumed;
 
-    HistogramNaiveSingleValuedLeafCollector(
-        NumericDocValues values, long bucketWidth, int maxBuckets, LongIntHashMap counts) {
+    HistogramNaiveSingleValuedLeafFacetCutter(
+        NumericDocValues values, long bucketWidth, int maxBuckets) {
       this.values = values;
       this.bucketWidth = bucketWidth;
       this.maxBuckets = maxBuckets;
-      this.counts = counts;
     }
 
     @Override
-    public void setScorer(Scorable scorer) throws IOException {}
-
-    @Override
-    public void collect(int doc) throws IOException {
+    public boolean advanceExact(int doc) throws IOException {
       if (values.advanceExact(doc)) {
         final long value = values.longValue();
-        final long bucket = Math.floorDiv(value, bucketWidth);
-        counts.addTo(bucket, 1);
-        checkMaxBuckets(counts.size(), maxBuckets);
+        bucket = (int) Math.floorDiv(value, bucketWidth);
+        isConsumed = false;
+        checkMaxBuckets(bucket, maxBuckets);
+        return true;
       }
+      return false;
+    }
+
+    @Override
+    public int nextOrd() {
+      if (isConsumed) {
+        return NO_MORE_ORDS;
+      }
+      isConsumed = true;
+      return bucket;
     }
   }
 
@@ -166,7 +214,7 @@ final class HistogramCollector implements Collector {
    * Optimized histogram {@link LeafCollector}, that takes advantage of the doc-values index to
    * speed up collection.
    */
-  private static class HistogramLeafCollector implements LeafCollector {
+  private static class HistogramLeafFacetCutter implements LeafFacetCutter {
 
     private final NumericDocValues values;
     private final DocValuesSkipper skipper;
@@ -174,7 +222,6 @@ final class HistogramCollector implements Collector {
     private final int maxBuckets;
     private final int[] counts;
     private final long leafMinBucket;
-    private final LongIntHashMap collectorCounts;
 
     /** Max doc ID (inclusive) up to which all docs values may map to the same bucket. */
     private int upToInclusive = -1;
@@ -185,25 +232,20 @@ final class HistogramCollector implements Collector {
     /** Index in {@link #counts} for docs up to {@link #upToInclusive}. */
     private int upToBucketIndex;
 
-    HistogramLeafCollector(
-        NumericDocValues values,
-        DocValuesSkipper skipper,
-        long bucketWidth,
-        int maxBuckets,
-        LongIntHashMap collectorCounts) {
+    private boolean isConsumed;
+    private int bucket;
+
+    HistogramLeafFacetCutter(
+        NumericDocValues values, DocValuesSkipper skipper, long bucketWidth, int maxBuckets) {
       this.values = values;
       this.skipper = skipper;
       this.bucketWidth = bucketWidth;
       this.maxBuckets = maxBuckets;
-      this.collectorCounts = collectorCounts;
 
       leafMinBucket = Math.floorDiv(skipper.minValue(), bucketWidth);
       long leafMaxBucket = Math.floorDiv(skipper.maxValue(), bucketWidth);
       counts = new int[Math.toIntExact(leafMaxBucket - leafMinBucket + 1)];
     }
-
-    @Override
-    public void setScorer(Scorable scorer) throws IOException {}
 
     private void advanceSkipper(int doc) throws IOException {
       if (doc > skipper.maxDocID(0)) {
@@ -238,35 +280,40 @@ final class HistogramCollector implements Collector {
     }
 
     @Override
-    public void collect(int doc) throws IOException {
+    public boolean advanceExact(int doc) throws IOException {
       if (doc > upToInclusive) {
         advanceSkipper(doc);
       }
 
       if (upToSameBucket) {
-        counts[upToBucketIndex]++;
+        bucket = upToBucketIndex;
+        isConsumed = false;
+        return true;
       } else if (values.advanceExact(doc)) {
         final long value = values.longValue();
-        final long bucket = Math.floorDiv(value, bucketWidth);
-        counts[(int) (bucket - leafMinBucket)]++;
+        bucket = (int) Math.floorDiv(value, bucketWidth);
+        checkMaxBuckets(bucket, maxBuckets);
+        isConsumed = false;
+        return true;
       }
+      return false;
     }
 
     @Override
-    public void finish() throws IOException {
-      // Put counts that we computed in the int[] back into the hash map.
-      for (int i = 0; i < counts.length; ++i) {
-        collectorCounts.addTo(leafMinBucket + i, counts[i]);
+    public int nextOrd() {
+      if (isConsumed) {
+        return OrdinalIterator.NO_MORE_ORDS;
       }
-      checkMaxBuckets(collectorCounts.size(), maxBuckets);
+      isConsumed = true;
+      return bucket;
     }
   }
 
-  private static void checkMaxBuckets(int size, int maxBuckets) {
-    if (size > maxBuckets) {
+  private static void checkMaxBuckets(int bucket, int maxBuckets) {
+    if (bucket >= maxBuckets) {
       throw new IllegalStateException(
           "Collected "
-              + size
+              + bucket
               + " buckets, which is more than the configured max number of buckets: "
               + maxBuckets);
     }
