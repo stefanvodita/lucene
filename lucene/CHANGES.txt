@@ -9,7 +9,7 @@ API Changes
 ---------------------
 * GITHUB#11023: Removing deprecated parameters from CheckIndex. (Jakub Slowinski)
 
-* GITHUB#00000: Test8 (Stefan Vodita)
+* GITHUB#00000: Test9 (Stefan Vodita)
 
 * GITHUB#14165: TieredMergePolicy's maxMergeAtOnce parameter was removed. (Adrien Grand)
 
