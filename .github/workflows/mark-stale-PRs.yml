@@ -22,7 +22,7 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-          days-before-pr-stale: 14
+          days-before-pr-stale: 1
           days-before-issue-stale: -1   # don't mark issues as stale
           exempt-draft-pr: true         # don't mark draft PRs as stale
 
