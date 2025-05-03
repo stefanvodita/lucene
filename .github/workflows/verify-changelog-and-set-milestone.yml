@@ -41,9 +41,7 @@ jobs:
           echo "################## STEP 2 ##################"
           echo "Checking for change log entry in ${{ env.CHANGE_LOG_FILE }}"
           git remote add upstream https://github.com/${{ github.repository }}.git
-          # 
-          #git fetch --unshallow || true
-          #
+          git fetch --unshallow || true
           git fetch upstream ${{ github.event.pull_request.base.sha }}
           git log  --pretty=oneline | tail -n 2 | cat
           echo "merge base sha: ${{ github.event.pull_request.base.sha }}, merge head sha: ${{ github.event.pull_request.head.sha }}"
@@ -52,6 +50,7 @@ jobs:
           BASE_BRANCH=${{ github.event.pull_request.base.ref }}
           git fetch upstream $BASE_BRANCH
           
+          # Find merge base commit to diff against
           BASE_COMMIT=$(git merge-base HEAD upstream/$BASE_BRANCH)
           echo "Using merge base for comparison: $BASE_COMMIT"
           echo "Last 3 commits up to merge base:"
