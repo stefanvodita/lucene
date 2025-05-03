@@ -41,12 +41,11 @@ jobs:
           echo "################## STEP 2 ##################"
           echo "Checking for change log entry in ${{ env.CHANGE_LOG_FILE }}"
           git remote add upstream https://github.com/${{ github.repository }}.git
-          # We need this to ensure we will be able to find the merge base later
-          git fetch --unshallow || true
-          #git fetch upstream ${{ github.event.pull_request.base.sha }}
 
           # Add and fetch full history of the base branch
           BASE_BRANCH=${{ github.event.pull_request.base.ref }}
+          # We need this to ensure we will be able to find the merge base
+          git fetch --unshallow || true
           git fetch upstream $BASE_BRANCH
 
           # Find merge base commit to diff against
@@ -57,6 +56,7 @@ jobs:
           echo "Last 3 commits up to PR head:"
           git log --oneline -n 3 HEAD
 
+          echo "Diff:"
           git diff --name-only $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }}
           if ! git diff --name-only $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }}; then
             echo "Change log file:${{ env.CHANGE_LOG_FILE }} does not contains an entry corresponding to changes introduced in PR. Please add a changelog entry."
@@ -71,6 +71,7 @@ jobs:
           echo "Extracting Lucene version from change log entry"
           # git diff header pattern -> "@@ -15,0 +16,4 @@" 
           # try to extract the line number at which new entry is added, here it's line number 16
+          echo "Diff:"
           git diff --unified=0 $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }}
           diff=$(git diff --unified=0 $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }})
           lucene_version=""
