@@ -56,6 +56,9 @@ jobs:
           echo "Extracting Lucene version from change log entry"
           # git diff header pattern -> "@@ -15,0 +16,4 @@" 
           # try to extract the line number at which new entry is added, here it's line number 16
+          #
+          git diff ${{ github.event.pull_request.base.sha }} --unified=0 -- ${{ env.CHANGE_LOG_FILE }}
+          #
           diff=$(git diff ${{ github.event.pull_request.base.sha }} --unified=0 -- ${{ env.CHANGE_LOG_FILE }})
           lucene_version=""
           diff_header_pattern="@@ -[0-9]+,?[0-9]* \+([0-9]*),?[0-9]* @@"
