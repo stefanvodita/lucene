@@ -26,11 +26,6 @@ jobs:
         run: |
           echo "################## STEP 1 ##################"
           echo "Get all labels from PR #${{ github.event.number }}"
-          # TODO :rm
-          echo "Repo: $BASE_REPO"
-          gh auth status
-          gh pr view ${{ github.event.number }} --repo "$BASE_REPO"
-          #
           mapfile -t labels < <(gh pr view ${{ github.event.number }} --repo "$BASE_REPO" --json labels -q '.labels[].name')
           IFS=','; echo "${labels[*]}"
           for label in "${labels[@]}"; do
@@ -44,14 +39,8 @@ jobs:
           echo -e "\n"
           echo "################## STEP 2 ##################"
           echo "Checking for change log entry in ${{ env.CHANGE_LOG_FILE }}"
-          #
           git remote add upstream https://github.com/${{ github.repository }}.git
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
           git fetch upstream ${{ github.event.pull_request.base.sha }} --depth=1
-          # git fetch upstream
-          git remote -v
-          git diff ${{ github.event.pull_request.base.sha }} --name-only
-          # git fetch origin ${{ github.event.pull_request.base.ref }}
           git log  --pretty=oneline | tail -n 2 | cat
           echo "merge base sha: ${{ github.event.pull_request.base.sha }}, merge head sha: ${{ github.event.pull_request.head.sha }}"
           if ! git diff ${{ github.event.pull_request.base.sha }} --name-only | grep -q "${{ env.CHANGE_LOG_FILE }}"; then
