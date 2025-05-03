@@ -7,6 +7,8 @@ env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   ISSUE: ${{ github.event.issue.html_url }}
   BASE_REPO: ${{ github.repository }}
+  MERGE_COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+  PR_HEAD: ${{ github.event.pull_request.head.sha }}
   SKIP_CHANGELOG_CHECK_LABEL: ${{ '"skip-changelog-check"' }}
   CHANGE_LOG_FILE: ${{ 'lucene/CHANGES.txt' }}
 
@@ -40,11 +42,30 @@ jobs:
           echo "################## STEP 2 ##################"
           echo "Checking for change log entry in ${{ env.CHANGE_LOG_FILE }}"
           git remote add upstream https://github.com/${{ github.repository }}.git
-          git fetch upstream ${{ github.event.pull_request.base.sha }} --depth=1
+          # 
+          git fetch --unshallow || true
+          #
+          git fetch upstream ${{ github.event.pull_request.base.sha }}
           git log  --pretty=oneline | tail -n 2 | cat
           echo "merge base sha: ${{ github.event.pull_request.base.sha }}, merge head sha: ${{ github.event.pull_request.head.sha }}"
-          git diff --name-only upstream/${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} -- ${{ env.CHANGE_LOG_FILE }}
-          if ! git diff --name-only upstream/${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} -- ${{ env.CHANGE_LOG_FILE }}; then
+          
+          # Add and fetch full history of the base branch
+          BASE_BRANCH=${{ github.event.pull_request.base.ref }}
+          git fetch upstream $BASE_BRANCH
+          if ! git rev-parse --verify --quiet upstream/$BASE_BRANCH; then
+            echo "Error: upstream/$BASE_BRANCH not found after fetch"
+            exit 1
+          fi
+          git branch -r
+          
+          # Use proper two-dot diff between fetched base and PR HEAD
+          BASE_COMMIT=$(git merge-base HEAD upstream/$BASE_BRANCH)
+          echo "Using merge base for comparison: $BASE_COMMIT"
+          git log --oneline -n 3 $BASE_COMMIT
+          git log --oneline -n 3 HEAD
+  
+          git diff --name-only $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }}
+          if ! git diff --name-only $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }}; then
             echo "Change log file:${{ env.CHANGE_LOG_FILE }} does not contains an entry corresponding to changes introduced in PR. Please add a changelog entry."
             exit 0
           else
@@ -58,9 +79,9 @@ jobs:
           # git diff header pattern -> "@@ -15,0 +16,4 @@" 
           # try to extract the line number at which new entry is added, here it's line number 16
           #
-          git diff --unified=0 upstream/${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} -- ${{ env.CHANGE_LOG_FILE }}
+          git diff --unified=0 $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }}
           #
-          diff=$(git diff --unified=0 upstream/${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} -- ${{ env.CHANGE_LOG_FILE }})
+          diff=$(git diff --unified=0 $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }})
           lucene_version=""
           diff_header_pattern="@@ -[0-9]+,?[0-9]* \+([0-9]*),?[0-9]* @@"
           if [[ $diff =~ $diff_header_pattern ]]; then
