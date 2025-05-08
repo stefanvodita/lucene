@@ -58,7 +58,7 @@ jobs:
 
           echo "Diff:"
           git diff --name-only $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }}
-          if ! git diff --name-only $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }}; then
+          if git diff --exit-code --name-only $BASE_COMMIT HEAD -- ${{ env.CHANGE_LOG_FILE }}; then
             echo "Change log file:${{ env.CHANGE_LOG_FILE }} does not contains an entry corresponding to changes introduced in PR. Please add a changelog entry."
             exit 0
           else
